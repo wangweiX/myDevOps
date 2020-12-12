@@ -12,10 +12,13 @@ echo "#--------------------------------------------------------------------"
 MY_NEW_USER='wangwei'
 MY_SSH_PORT=41837
 EXFAT_DISK='/dev/sda'
-MY_PROXY='http://192.168.0.100:6152'
-SYSCTL_CONFIG="/root/sysctl.conf"
+MY_PROXY='192.168.0.100:6152'
+SYSCTL_CONFIG="$PWD/sysctl.conf"
 NEW_USER_HOME=/home/${MY_NEW_USER}
 ZSH_HOME=${NEW_USER_HOME}/.oh-my-zsh
+STATIC_IP='192.168.0.105/24'
+GATEWAY4='192.168.0.1'
+DNS_SERVER='192.168.0.1'
 
 # check user permission
 if [[ `whoami` != root ]]; then
@@ -41,16 +44,38 @@ done
 #echo "$PASS" # ==> Or, redirect to file, as desired.
 #exit 0
 
-export http_proxy=${MY_PROXY}
-export https_proxy=${MY_PROXY}
+static_ip(){
+  echo "Start to config static ip ... "
+  if [ ! -f "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg" ]; then
+    touch "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
+    echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+  fi
 
-proxy_tunning(){
-  echo "Starting proxy_tunning"
-  echo "http_proxy=${MY_PROXY}" >> /etc/environment
-  echo "https_proxy=${MY_PROXY}" >> /etc/environment
-  echo "http_proxy=${MY_PROXY}" >> /etc/wgetrc
-  echo "https_proxy=${MY_PROXY}" >> /etc/wgetrc
-  echo "Finished proxy_tunning"
+  cp /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.bak
+
+  echo "network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      dhcp4: no
+      addresses:
+        - ${STATIC_IP}
+      gateway4: ${GATEWAY4}
+      nameservers:
+        addresses: [${DNS_SERVER}]" > /etc/netplan/50-cloud-init.yaml
+
+  netplan apply
+
+  echo "Static ip config is complate ! "
+}
+
+set_proxy(){
+  echo "Start to set proxy..."
+  export https_proxy=http://${MY_PROXY};
+  export http_proxy=http://${MY_PROXY};
+  export all_proxy=socks5://${MY_PROXY};
+  echo "Proxy setting completed!"
 }
 
 hostname_check(){
@@ -62,41 +87,62 @@ HOSTNAME=$1
 }
 
 change_hostname(){
-  # change hostname for server
-  echo "Starting change hostname"
+  echo "Start to change hostname..."
   hostname_check
   
-  hostname_pattern='wangwei-pi4-+([[:digit:]])'
+  hostname_pattern='wangwei-rpi4-+([[:digit:]])'
   while [[ $HOSTNAME != $hostname_pattern ]];do
-    echo "Wrong name,example:wangwei-pi4-xxx"; hostname_check
+    echo "Wrong name,example:wangwei-rpi4-xxx"; hostname_check
   done
   
   hostname $HOSTNAME
   sed -i "s/^.*/$HOSTNAME/g" /etc/hostname
   sed -i "s/^${ETH0}.*/${ETH0} ${HOSTNAME} ${HOSTNAME}/g" /etc/hosts
-  echo "Finished change hostname"
+  echo "Hostname change complated!"
 }
 
-sshuser_tunning(){
-  # https://www.digitalocean.com/community/tutorials/how-to-add-and-delete-users-on-ubuntu-16-04
-  # backup file
-  echo "Starting sshuser tunning"
+package_tuning(){
+  echo "Start to tuning package..."
+  # set language US
+  if ! grep 'LANGUAGE=en_US.UTF-8' /etc/profile >/dev/null; then
+  echo 'export LANGUAGE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export LC_CTYPE=UTF-8
+export LANG=en_US.UTF-8
+  ' >> /etc/profile
+  fi
 
+  source /etc/profile
+
+  # update & upgrade
+  apt-get update && apt-get upgrade -y
+  
+  # install some package
+  apt-get install -y ufw unzip ntp htop git-core zsh wireless-tools exfat-fuse exfat-utils net-tools lvm2
+  # update & upgrade again
+  apt-get update && apt-get upgrade -y
+  # The following packages were automatically installed and are no longer required
+  apt-get autoremove
+  echo "Package tuning completed! "
+}
+
+sshuser_tuning(){
+  echo "Start to tuning sshuser ..."
+
+  /usr/bin/id $MY_NEW_USER >/dev/null 2>&1;
+  if [ $? = 0 ]; then
+    echo "Account $MY_NEW_USER has already exists, Don't run the scripts twice.";
+  fi
+
+  # https://www.digitalocean.com/community/tutorials/how-to-add-and-delete-users-on-ubuntu-16-04
+  
+
+  # backup file
   cp -p /etc/passwd /etc/passwd.bak
   cp -p /etc/shadow /etc/shadow.bak
   cp -p /etc/group /etc/group.bak
 
-  # Create Home Directory + .ssh Directory
-  if [ ! -d "${NEW_USER_HOME}/.ssh" ]; then
-    mkdir -p ${NEW_USER_HOME}/.ssh
-  fi
-
-  # Create Authorized Keys File
-  if [ ! -f "${NEW_USER_HOME}/.ssh/authorized_keys" ]; then
-    touch "${NEW_USER_HOME}/.ssh/authorized_keys"
-  fi
-
-  # Create User + Set Home Directory
+  # Create User + Home Directory
   useradd -d ${NEW_USER_HOME} ${MY_NEW_USER}
 
   # Create Group sshers
@@ -107,6 +153,16 @@ sshuser_tunning(){
 
   # Set Password on User
   echo ${MY_NEW_USER}:${PASS} | /usr/sbin/chpasswd
+
+  # Create .ssh Directory
+  if [ ! -d "${NEW_USER_HOME}/.ssh" ]; then
+    mkdir -p ${NEW_USER_HOME}/.ssh
+  fi
+
+  # Create Authorized Keys File
+  if [ ! -f "${NEW_USER_HOME}/.ssh/authorized_keys" ]; then
+    touch "${NEW_USER_HOME}/.ssh/authorized_keys"
+  fi
 
   # customizing bash prompt
   if [ ! -f "${NEW_USER_HOME}/.bashrc" ]; then
@@ -136,11 +192,6 @@ export LANG=en_US.UTF-8
   ' >> ${NEW_USER_HOME}/.profile
   fi
 
-  # set motd message
-  if ! grep 'run-parts /etc/update-motd.d/' ${NEW_USER_HOME}/.profile >/dev/null; then
-    echo 'run-parts /etc/update-motd.d/' >> ${NEW_USER_HOME}/.profile
-  fi
-  
   # install oh-my-zsh
   git config --global http.proxy ${MY_PROXY}
   git config --global https.proxy ${MY_PROXY}
@@ -164,11 +215,11 @@ export LANG=en_US.UTF-8
   chmod 644 ${NEW_USER_HOME}/.ssh/authorized_keys
   chown -R ${MY_NEW_USER}:${MY_NEW_USER} ${NEW_USER_HOME}
   
-  echo "Finished sshuser tunning"
+  echo "Sshuser tuning is completed ! "
 }
 
-sshd_config_tunning(){
-  echo "Starting sshd_config_tunning"
+sshd_config_tuning(){
+  echo "Start to tuning sshd config ... "
 
   # sshd config
   # https://www.cyberciti.biz/tips/linux-unix-bsd-openssh-server-best-practices.html
@@ -176,78 +227,58 @@ sshd_config_tunning(){
   # backup file
   cp -p /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 
-  # disable root login
-  sed -ri 's/PermitRootLogin\s+yes/PermitRootLogin\tno/g; s/ChallengeResponseAuthentication\s+yes/ChallengeResponseAuthentication\tno/g; s/UsePAM\s+yes/UsePAM\tno/g; ' /etc/ssh/sshd_config
-  
-  # Disable password based login
-  # sed -ri 's/PasswordAuthentication\s+yes/PasswordAuthentication\tno/g;' /etc/ssh/sshd_config
-  sed -ri 's/PubkeyAuthentication\s+no/PubkeyAuthentication\tyes/g;' /etc/ssh/sshd_config
-  
+  # Disable ChallengeResponseAuthentication
+  sed -ri 's/^#?ChallengeResponseAuthentication\s+(yes|no)$/ChallengeResponseAuthentication no/g;' /etc/ssh/sshd_config
+
+  # Disable UsePAM
+  sed -ri 's/^#?UsePAM\s+(yes|no)$/UsePAM no/g;' /etc/ssh/sshd_config
+
   # Disable Empty Passwords
-  sed -ri 's/PermitEmptyPasswords\s+yes/PermitEmptyPasswords\tno/g;' /etc/ssh/sshd_config
-
-  # Limit Users’ ssh access
-  if ! grep 'AllowGroups sshers' /etc/ssh/sshd_config >/dev/null;then echo "AllowGroups sshers" >> /etc/ssh/sshd_config;fi
-  if ! grep 'DenyUsers root' /etc/ssh/sshd_config >/dev/null;then echo "DenyUsers root" >> /etc/ssh/sshd_config;fi
-  
-  # change ssh port from 22 to 41837
-  sed -ri "s/#Port 22/Port ${MY_SSH_PORT}/g" /etc/ssh/sshd_config
-
-  # Configure idle log out timeout interval
-  if ! grep 'ClientAliveInterval 300' /etc/ssh/sshd_config >/dev/null;then echo "ClientAliveInterval 300" >> /etc/ssh/sshd_config;fi
-  if ! grep 'ClientAliveCountMax 0' /etc/ssh/sshd_config >/dev/null;then echo "ClientAliveCountMax 0" >> /etc/ssh/sshd_config;fi
+  sed -ri 's/^#?PermitEmptyPasswords\s+(yes|no)$/PermitEmptyPasswords no/g;' /etc/ssh/sshd_config
 
   # Disable .rhosts files (verification)
-  sed -ri 's/IgnoreRhosts\s+no/IgnoreRhosts\tyes/g;' /etc/ssh/sshd_config  
-  
-  # Disable host-based authentication (verification)
-  sed -ri 's/HostbasedAuthentication\s+yes/HostbasedAuthentication\tno/g;' /etc/ssh/sshd_config 
+  sed -ri 's/^#?IgnoreRhosts\s+(yes|no)$/IgnoreRhosts no/g;' /etc/ssh/sshd_config
 
-  ## change ntp conf
-  # sed -i s/server\ 0.*/'server 0.asia.pool.ntp.org'/ /etc/ntp.conf
-  # sed -i s/server\ 1.*/'server 1.asia.pool.ntp.org'/ /etc/ntp.conf
-  # sed -i s/server\ 2.*/'server 2.asia.pool.ntp.org'/ /etc/ntp.conf
-  # sed -i "/.*127.127.1.0/s/^/#/" /etc/ntp.conf
+  # Disable host-based authentication (verification)
+  sed -ri 's/^#?HostbasedAuthentication\s+(yes|no)$/HostbasedAuthentication no/g;' /etc/ssh/sshd_config
+
+  # Disable root login
+  sed -ri 's/^#?PermitRootLogin\s+[a-zA-Z-]+$/PermitRootLogin no/g;' /etc/ssh/sshd_config
+
+  # Disable password login and Enable Pubkey login
+  sed -ri 's/^#?PubkeyAuthentication\s+(yes|no)$/PubkeyAuthentication yes/g;' /etc/ssh/sshd_config
+  #sed -ri 's/^#?PasswordAuthentication\s+(yes|no)$/PasswordAuthentication no/g;' /etc/ssh/sshd_config
+
+  # Limit Users ssh access
+  if ! grep 'AllowGroups sshers' /etc/ssh/sshd_config >/dev/null; then 
+    echo "AllowGroups sshers" >> /etc/ssh/sshd_config
+  fi
+  if ! grep 'DenyUsers root' /etc/ssh/sshd_config >/dev/null; then 
+    echo "DenyUsers root" >> /etc/ssh/sshd_config
+  fi
+
+  # Configure idle log out timeout interval
+  sed -ri 's/^#?ClientAliveInterval\s+[0-9]+$/ClientAliveInterval 300/g;' /etc/ssh/sshd_config
+  if ! grep 'ClientAliveInterval 300' /etc/ssh/sshd_config >/dev/null; then 
+    echo "ClientAliveInterval 300" >> /etc/ssh/sshd_config
+  fi
+  sed -ri 's/^#?ClientAliveCountMax\s+[0-9]+$/ClientAliveCountMax 0/g;' /etc/ssh/sshd_config
+  if ! grep 'ClientAliveCountMax 0' /etc/ssh/sshd_config >/dev/null; then 
+    echo "ClientAliveCountMax 0" >> /etc/ssh/sshd_config
+  fi
+
+  # Change ssh port from 22 to custom port
+  sed -ri "s/^#?Port\s+[0-9]+$/Port ${MY_SSH_PORT}/g;" /etc/ssh/sshd_config
 
   ## Logrotate
   #  sed -i 's/\#compress/compress/' /etc/logrotate.conf
   
   service sshd restart
-  echo "Finished sshd_config_tunning"
+  echo "Sshd config tuning completed ! "
 }
 
-sshd_pwd_auth_tunning(){
-    sed -ri 's/#PasswordAuthentication\s+yes/PasswordAuthentication\tno/g;' /etc/ssh/sshd_config
-    if ! grep 'AuthenticationMethods publickey' /etc/ssh/sshd_config >/dev/null;then echo "AuthenticationMethods publickey" >> /etc/ssh/sshd_config;fi
-}
-
-package_tunning(){
-  echo "Starting package_tunning"
-  # set language US
-  if ! grep 'LANGUAGE=en_US.UTF-8' /etc/profile >/dev/null; then
-  echo 'export LANGUAGE=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
-export LC_CTYPE=UTF-8
-export LANG=en_US.UTF-8
-  ' >> /etc/profile
-  fi
-
-  source /etc/profile
-
-  # update & upgrade
-  apt-get update && apt-get upgrade -y
-  
-  # install some package
-  apt-get install -y iptables iptables-persistent unzip ntp htop git-core zsh wireless-tools exfat-fuse exfat-utils 
-  # update & upgrade again
-  apt-get update && apt-get upgrade -y
-  # The following packages were automatically installed and are no longer required
-  apt-get autoremove
-  echo "Finished package_tunning"
-}
-
-base_system_tunning(){
-  echo "Starting base_system_tunning"
+system_tuning(){
+  echo "Starting tuning system kernel ... "
   
   # timezone set
   timedatectl set-timezone Asia/Shanghai
@@ -262,11 +293,14 @@ base_system_tunning(){
   sysctl -p
   
   # limits.conf optimization
-  echo "Finished base_system_tunning"
+  echo "System kernel tuning completed ! "
 }
 
-disk_dev_tunning(){
-  echo "Starting disk_dev_tunning"
+disk_dev_tuning(){
+  echo "Start to tuning disk ... "
+
+  # fdisk -l
+  # mkfs.ext3 /dev/sdb1
 
   # change lvm config
   cp /etc/lvm/lvm.conf /etc/lvm/lvm.conf.bak
@@ -300,11 +334,10 @@ disk_dev_tunning(){
     echo "/dev/domuvg/swap          swap                    swap      defaults        0 0" >> /etc/fstab
     echo "/dev/domuvg/mydata        /mydata                 exfat     defaults        0 0" >> /etc/fstab
   fi
-  echo "Finished disk_dev_tunning"
+  echo "Disk tuning is completed ! "
 }
 
 output_passwd(){
-  echo "output system user password"
   PASS_FILE=/tmp/pass_temp
   HOSTNAME=$(hostname)
   echo "----SYSTEM INFORMATION---- " > $PASS_FILE
@@ -319,8 +352,7 @@ output_passwd(){
   -----------END-----------" >> $PASS_FILE
   cat $PASS_FILE
   rm -rf $PASS_FILE
-  exit 0
-  echo "Finished output passowrd"
+  echo "Please send the output information to the administrator to update KeePass"
 }
 
 remove_ubuntu_user(){
@@ -331,20 +363,35 @@ remove_ubuntu_user(){
   fi
 }
 
-/usr/bin/id $MY_NEW_USER >/dev/null 2>&1;
-
-if [ $? = 0 ]; then
-    echo "Account $MY_NEW_USER has already exists, Don't run the scripts twice.";
-else
-    package_tunning
-    # proxy_tunning
-    change_hostname
-    sshuser_tunning
-    sshd_config_tunning  
-    # sshd_pwd_auth_tunning
-    base_system_tunning
-    # disk_dev_tunning
-    output_passwd
-    # remove_ubuntu_user
-    echo "Please send the output information to the administrator to update KeePass"
-fi
+case $1 in
+    ip)
+      static_ip
+      ;;
+    proxy)
+      set_proxy
+      ;;
+    hostname)
+      change_hostname
+      ;;
+    pkg)
+      package_tuning
+      ;;
+    sshuser)
+      sshuser_tuning
+      output_passwd
+      ;;
+    sshd)
+      sshd_config_tuning
+      ;;
+    system)
+      system_tuning
+      ;;  
+    disk)
+      disk_dev_tuning
+      ;;
+    *)
+      echo "illegal command: %s\n" "$1" >&2
+	  exit 1
+	  ;;
+esac
+exit 0
