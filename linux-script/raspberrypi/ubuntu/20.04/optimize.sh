@@ -94,10 +94,9 @@ change_hostname(){
   while [[ $HOSTNAME != $hostname_pattern ]];do
     echo "Wrong name,example:wangwei-rpi4-xxx"; hostname_check
   done
-  
-  hostname $HOSTNAME
+  hostnamectl set-hostname $HOSTNAME
   sed -i "s/^.*/$HOSTNAME/g" /etc/hostname
-  sed -i "s/^${ETH0}.*/${ETH0} ${HOSTNAME} ${HOSTNAME}/g" /etc/hosts
+  sed -i "s/^${ETH0}.*/${ETH0} ${HOSTNAME}/g" /etc/hosts
   echo "Hostname change complated!"
 }
 
@@ -114,13 +113,13 @@ export LANG=en_US.UTF-8
 
   source /etc/profile
 
-  # update & upgrade
-  apt-get update && apt-get upgrade -y
-  
+  # upgrade & update
+  apt upgrade -y && apt update -y
+
   # install some package
-  apt-get install -y ufw unzip ntp htop git-core zsh wireless-tools exfat-fuse exfat-utils net-tools lvm2
+  apt install -y ufw unzip ntp htop git-core zsh wireless-tools exfat-fuse exfat-utils net-tools lvm2
   # update & upgrade again
-  apt-get update && apt-get upgrade -y
+  apt upgrade -y && apt update -y
   # The following packages were automatically installed and are no longer required
   apt-get autoremove
   echo "Package tuning completed! "
@@ -203,6 +202,11 @@ export LANG=en_US.UTF-8
    echo 'source ~/.profile' >> ${NEW_USER_HOME}/.zshrc
   fi
 
+  # set motd message
+  if ! grep 'run-parts /etc/update-motd.d/' ${NEW_USER_HOME}/.profile >/dev/null; then
+    echo 'run-parts /etc/update-motd.d/' >> ${NEW_USER_HOME}/.profile
+  fi
+  
   # custom prompt
   echo "PROMPT=\"%{\$fg[green]%}%n@%{\$fg[green]%}%m%{\$reset_color%} \${PROMPT}\"" >> ${NEW_USER_HOME}/.zshrc
 
@@ -277,7 +281,7 @@ sshd_config_tuning(){
   echo "Sshd config tuning completed ! "
 }
 
-system_tuning(){
+kernel_tuning(){
   echo "Starting tuning system kernel ... "
   
   # timezone set
@@ -299,6 +303,7 @@ system_tuning(){
 disk_dev_tuning(){
   echo "Start to tuning disk ... "
 
+  # https://linux.cn/article-3218-1.html
   # fdisk -l
   # mkfs.ext3 /dev/sdb1
 
@@ -310,22 +315,30 @@ disk_dev_tuning(){
   # create lvm first
   ls ${EXFAT_DISK} >/dev/null 2>&1;
   if [ $? = 0 ]; then
-    /sbin/pvcreate ${EXFAT_DISK}
-    /sbin/vgcreate domuvg ${EXFAT_DISK}
-    /sbin/lvcreate -L 1G -n swap domuvg
-    /sbin/mkswap /dev/domuvg/swap
-    /sbin/swapon /dev/domuvg/swap
+    # 创建物理卷 | 删除物理卷 pvremove
+    pvcreate ${EXFAT_DISK}
+    # 创建卷组 domuvg | 删除卷组 vgremove
+    vgcreate domuvg ${EXFAT_DISK}
+    # 创建1g大小的swap逻辑卷 | 删除逻辑卷 lvremove
+    lvcreate -L 1G -n swap domuvg
+    mkswap /dev/domuvg/swap
+    swapon /dev/domuvg/swap
+
     # Adjusting the Swappiness Property
     # sed -ri 's/vm.swappiness\s+=\s+0/vm.swappiness=10/g' /etc/sysctl.conf
     # Adjusting the Cache Pressure Setting
-    if ! grep 'vm.vfs_cache_pressure' /etc/sysctl.conf >/dev/null;then echo "vm.vfs_cache_pressure=50" >> /etc/sysctl.conf;fi
-
-    # create mydata
-    mkdir -p /mydata
+    if ! grep 'vm.vfs_cache_pressure' /etc/sysctl.conf >/dev/null; then 
+      echo "vm.vfs_cache_pressure=50" >> /etc/sysctl.conf
+    fi
     
-    /sbin/lvcreate -l +100%FREE -n mydata domuvg
-    /sbin/mkfs.exfat /dev/domuvg/mydata
-    /bin/mount /dev/domuvg/mydata /mydata
+    # 剩余的全部用来创建mydata逻辑卷
+    lvcreate -l +100%FREE -n mydata domuvg
+    # 格式化逻辑卷
+    mkfs.exfat /dev/domuvg/mydata
+
+    # 创建目录 /mydata 并挂在逻辑卷
+    mkdir -p /mydata
+    mount /dev/domuvg/mydata /mydata
     
     chmod 755 /mydata
     chown -R ${MY_NEW_USER}:${MY_NEW_USER} /mydata
@@ -383,8 +396,8 @@ case $1 in
     sshd)
       sshd_config_tuning
       ;;
-    system)
-      system_tuning
+    kernel)
+      kernel_tuning
       ;;  
     disk)
       disk_dev_tuning
